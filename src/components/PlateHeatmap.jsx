@@ -54,12 +54,15 @@ function lerp(a, b, t) { return a + (b - a) * t }
 function valueToColor(t, readType, emWavelength) {
   t = Math.max(0, Math.min(1, t))
 
-  // Wavelength-based: dark → spectral color of emission/measurement
+  // Wavelength-based: dark → complementary color of emission wavelength.
+  // The complement represents the perceived sample color (e.g. absorbing blue → appears yellow).
   if (emWavelength != null) {
     const rgb = wavelengthToRGB(emWavelength)
     if (rgb) {
       const [wr, wg, wb] = rgb
-      return `rgb(${Math.round(lerp(12, wr, t))},${Math.round(lerp(12, wg, t))},${Math.round(lerp(12, wb, t))})`
+      // Invert to complementary color
+      const cr = 255 - wr, cg = 255 - wg, cb = 255 - wb
+      return `rgb(${Math.round(lerp(12, cr, t))},${Math.round(lerp(12, cg, t))},${Math.round(lerp(12, cb, t))})`
     }
   }
 

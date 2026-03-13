@@ -146,6 +146,8 @@ export function parseBiotek(text, fileName) {
   // ── Parse Layout grid ──────────────────────────────────────────────────────
   if (layoutStart > -1) {
     let i = layoutStart + 1
+    // SheetJS CSV encodes empty rows as all-comma strings — skip them
+    while (i < rawLines.length && split[i].every(c => !c)) i++
     let colNumbers = []
     if (split[i] && split[i].some(c => /^\d+$/.test(c))) {
       colNumbers = split[i]
@@ -258,9 +260,12 @@ export function parseBiotek(text, fileName) {
 
   // ── Fallback A: Synergy H1 XLSX Results grid ──────────────────────────────
   const fallbackWellData = {}
+  let fallbackWavelength = null
   if (blockDatasets.length === 0 && calcResultsLine > -1) {
     let i = calcResultsLine + 1
-    while (i < rawLines.length && (!rawLines[i].trim() || (split[i]?.[0] ?? '').toLowerCase().startsWith('actual'))) i++
+    // Skip blank rows and "Actual Temperature" lines.
+    // SheetJS CSV encodes empty rows as all-comma strings, so check split cells not raw text.
+    while (i < rawLines.length && (split[i].every(c => !c) || (split[i]?.[0] ?? '').toLowerCase().startsWith('actual'))) i++
     if (split[i] && split[i][0] === '' && split[i][1] === '' && /^\d+$/.test(split[i][2] || '')) {
       const colNums = split[i]
       i++
@@ -268,6 +273,18 @@ export function parseBiotek(text, fileName) {
         const row = split[i]
         const rowLetter = /^[A-P]$/.test(row[1]) ? row[1] : null
         if (!rowLetter) break
+        // BioTek Synergy H1 stores "ex,em" wavelength in the last column(s) as a quoted value
+        // e.g. "485,528" → naive CSV split yields '"485' and '528"' in adjacent columns
+        if (fallbackWavelength === null) {
+          for (let j = row.length - 2; j >= 2; j--) {
+            const ex = parseInt((row[j] || '').replace(/"/g, ''))
+            const em = parseInt((row[j + 1] || '').replace(/"/g, ''))
+            if (ex >= 300 && ex <= 800 && em >= 300 && em <= 800) {
+              fallbackWavelength = `${ex}/${em}`
+              break
+            }
+          }
+        }
         for (let c = 2; c < row.length; c++) {
           const cell = row[c]
           if (!cell || cell === 'Well ID') continue
@@ -326,7 +343,7 @@ export function parseBiotek(text, fileName) {
   if (blockDatasets.length > 1)  return blockDatasets.map(makeResult)
 
   // Single fallback result
-  const fbWavelengths = []
+  const fbWavelengths = fallbackWavelength ? [fallbackWavelength] : []
   const plateSize = inferPlateSize(fallbackWellData)
   const readType  = inferReadType(fbWavelengths, meta, fallbackWellData)
   return {
