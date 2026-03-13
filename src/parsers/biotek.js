@@ -27,11 +27,22 @@ function parseTimeToSeconds(s) {
   return 0
 }
 
+const PLATE_SIZE_FORMATS = [
+  { size: 6,   maxRowOrd: 2,  maxCol: 3  },
+  { size: 24,  maxRowOrd: 4,  maxCol: 6  },
+  { size: 96,  maxRowOrd: 8,  maxCol: 12 },
+  { size: 384, maxRowOrd: 16, maxCol: 24 },
+]
+
 function inferPlateSize(wellData) {
-  const positions = Object.keys(wellData)
-  const hasRow9Plus = positions.some(p => /^[I-P]/i.test(p))
-  const hasCol13Plus = positions.some(p => parseInt(p.match(/\d+/)?.[0] || 0) > 12)
-  return (hasRow9Plus || hasCol13Plus) ? 384 : 96
+  const positions = Object.keys(wellData).filter(p => /^[A-P]\d+$/.test(p))
+  if (!positions.length) return 96
+  const maxRowOrd = Math.max(...positions.map(p => p.charCodeAt(0) - 64))
+  const maxCol    = Math.max(...positions.map(p => parseInt(p.slice(1))))
+  for (const { size, maxRowOrd: mr, maxCol: mc } of PLATE_SIZE_FORMATS) {
+    if (maxRowOrd <= mr && maxCol <= mc) return size
+  }
+  return 384
 }
 
 function inferReadType(wavelengths, meta, wellData) {
@@ -95,10 +106,10 @@ export function parseBiotek(text, fileName) {
   let calcResultsLine = -1
 
   for (let i = 0; i < rawLines.length; i++) {
-    const t = rawLines[i].trim()
-    if (t === 'Well IDs')          { wellIdsStart    = i; continue }
-    if (t === 'Layout')            { layoutStart     = i; continue }
-    if (t === 'Results' && calcResultsLine === -1) { calcResultsLine = i; continue }
+    const t0 = split[i]?.[0] || ''
+    if (t0 === 'Well IDs')                          { wellIdsStart    = i; continue }
+    if (t0 === 'Layout')                            { layoutStart     = i; continue }
+    if (t0 === 'Results' && calcResultsLine === -1) { calcResultsLine = i; continue }
   }
 
   // ── Parse Well IDs section (comma-delimited format) ────────────────────────
@@ -111,8 +122,9 @@ export function parseBiotek(text, fileName) {
     if ((split[i]?.[0] || '').toLowerCase().includes('well id')) i++
     while (i < rawLines.length) {
       const line = rawLines[i].trim()
+      const s0   = split[i]?.[0] || ''
       if (!line) { i++; continue }
-      if (line === 'Layout' || line === 'Results') break
+      if (s0 === 'Layout' || s0 === 'Results') break
       const parts = split[i]
       const name = parts[0]?.trim()
       const pos  = parts[1]?.trim()

@@ -1,7 +1,15 @@
 import { useState, useMemo } from 'react'
 
-const ROWS_96  = ['A','B','C','D','E','F','G','H']
-const ROWS_384 = ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P']
+const PLATE_LAYOUTS = {
+  6:   { rows: ['A','B'],                                                          numCols: 3  },
+  24:  { rows: ['A','B','C','D'],                                                  numCols: 6  },
+  96:  { rows: ['A','B','C','D','E','F','G','H'],                                  numCols: 12 },
+  384: { rows: ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P'], numCols: 24 },
+}
+
+function getLayout(plateSize) {
+  return PLATE_LAYOUTS[plateSize] || PLATE_LAYOUTS[96]
+}
 
 // Color scales ─────────────────────────────────────────────────────────────────
 function lerp(a, b, t) { return a + (b - a) * t }
@@ -65,11 +73,9 @@ export default function PlateHeatmap({
       return { rows, cols, values, vMin: Math.min(...allV), vMax: Math.max(...allV) }
     }
 
-    const ROWS = plateSize === 384 ? ROWS_384 : ROWS_96
-    const COLS = plateSize === 384 ? 24 : 12
-
-    const rows = ROWS
-    const cols = Array.from({ length: COLS }, (_, i) => String(i + 1))
+    const layout = getLayout(plateSize)
+    const rows = layout.rows
+    const cols = Array.from({ length: layout.numCols }, (_, i) => String(i + 1))
 
     const values = {}
     for (const [pos, series] of Object.entries(wellData)) {
@@ -86,11 +92,11 @@ export default function PlateHeatmap({
   const getT = (v) => vMax === vMin ? 0.5 : (v - vMin) / (vMax - vMin)
 
   // ── SVG layout ─────────────────────────────────────────────────────────────
-  const is384    = !isMatrix && plateSize === 384
-  const R        = is384 ? 10 : 16   // well circle radius
-  const gap      = is384 ? 24 : 36   // well center spacing
-  const padLeft  = is384 ? 28 : 42
-  const padTop   = is384 ? 22 : 32
+  const isSmall  = !isMatrix && (plateSize === 384)
+  const R        = isSmall ? 10 : 16   // well circle radius
+  const gap      = isSmall ? 24 : 36   // well center spacing
+  const padLeft  = isSmall ? 28 : 42
+  const padTop   = isSmall ? 22 : 32
   const svgW     = padLeft + cols.length * gap + 12
   const svgH     = padTop  + rows.length * gap + 12
 
@@ -118,7 +124,7 @@ export default function PlateHeatmap({
             y={padTop - 6}
             textAnchor="middle"
             className="plate-label"
-            fontSize={is384 ? 7 : 10}
+            fontSize={isSmall ? 7 : 10}
           >
             {isMatrix ? (colHeaders?.[ci] || ci + 1) : c}
           </text>
@@ -128,11 +134,11 @@ export default function PlateHeatmap({
         {rows.map((r, ri) => (
           <g key={r}>
             <text
-              x={padLeft - (is384 ? 10 : 14)}
+              x={padLeft - (isSmall ? 10 : 14)}
               y={padTop + ri * gap + 4}
               textAnchor="middle"
               className="plate-label"
-              fontSize={is384 ? 7 : 10}
+              fontSize={isSmall ? 7 : 10}
             >
               {isMatrix ? (rowLabels?.[ri] != null ? String(rowLabels[ri]).slice(0, 6) : ri + 1) : r}
             </text>
@@ -161,7 +167,7 @@ export default function PlateHeatmap({
                     stroke={isSelected ? '#63cab7' : (t >= 0 ? 'rgba(255,255,255,0.06)' : '#1e2d42')}
                     strokeWidth={isSelected ? 1.5 : 0.5}
                   />
-                  {!is384 && v != null && (
+                  {!isSmall && v != null && (
                     <text
                       x={cx} y={cy + 3}
                       textAnchor="middle"

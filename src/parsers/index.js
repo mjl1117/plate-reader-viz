@@ -1,9 +1,11 @@
 import * as XLSX from 'xlsx'
-import { parseBiotek }          from './biotek.js'
-import { parseMatrix }          from './matrix.js'
-import { parseTecan }           from './tecan.js'
-import { parseSoftmax }         from './softmax.js'
-import { tryParseSimpleKinetic } from './simplekinetic.js'
+import { parseBiotek }             from './biotek.js'
+import { parseMatrix }             from './matrix.js'
+import { parseTecan }              from './tecan.js'
+import { parseSoftmax }            from './softmax.js'
+import { tryParseSimpleKinetic }   from './simplekinetic.js'
+import { tryParseMultiSectionGrid } from './gridsections.js'
+import { tryParseTempGrid }        from './tempgrid.js'
 
 function readFileAsText(file) {
   return new Promise((resolve, reject) => {
@@ -66,7 +68,19 @@ async function parseXlsx(file) {
     if (r) return r
   }
 
-  // 5. Last resort: try BioTek anyway (catches edge cases)
+  // 5. Multi-section grid (e.g. Soil_GFP: label + col-numbers header, then A-H data rows)
+  for (const [name, rows] of Object.entries(sheetMap)) {
+    const r = tryParseMultiSectionGrid(rows, name, file.name)
+    if (r) return r
+  }
+
+  // 6. Temperature-column grid (e.g. MG_Data: col[1]=Temperature, col[2..N]=column numbers)
+  for (const [name, rows] of Object.entries(sheetMap)) {
+    const r = tryParseTempGrid(rows, name, file.name)
+    if (r) return r
+  }
+
+  // 7. Last resort: try BioTek anyway (catches edge cases)
   return parseBiotek(firstCsv, file.name)
 }
 

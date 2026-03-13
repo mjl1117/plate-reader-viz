@@ -29,26 +29,29 @@ const PREFERRED_SHEETS = [
 ]
 
 export function parseTecan(sheetMap, fileName) {
-  let bestName = null
-  let bestResult = null
+  const results = []
+  const attempted = new Set()
 
-  // Try preferred sheets in order
+  // Try all preferred sheets (collect all matches, not just first)
   for (const name of PREFERRED_SHEETS) {
-    if (sheetMap[name]) {
+    if (sheetMap[name] && !attempted.has(name)) {
+      attempted.add(name)
       const r = tryParseSheet(sheetMap[name], name)
-      if (r) { bestName = name; bestResult = r; break }
+      if (r) results.push({ name, r })
     }
   }
 
-  // Fallback: try all sheets
-  if (!bestResult) {
+  // Fallback: try remaining sheets
+  if (results.length === 0) {
     for (const [name, rows] of Object.entries(sheetMap)) {
-      const r = tryParseSheet(rows, name)
-      if (r) { bestName = name; bestResult = r; break }
+      if (!attempted.has(name)) {
+        const r = tryParseSheet(rows, name)
+        if (r) { results.push({ name, r }); break }
+      }
     }
   }
 
-  if (!bestResult) {
+  if (results.length === 0) {
     return {
       error: true,
       message: 'Could not find a parseable analysis sheet.\nLooking for a sheet with "Sample" header and numeric time columns.',
@@ -56,12 +59,56 @@ export function parseTecan(sheetMap, fileName) {
     }
   }
 
+  if (results.length === 1) {
+    return {
+      format: 'tecan',
+      fileName,
+      sheetName: results[0].name,
+      availableSheets: Object.keys(sheetMap),
+      ...results[0].r,
+    }
+  }
+
+  // Combine multiple sheets (e.g. FITC 1 + FITC 2 + FITC 3)
+  const primary = results[0].r
+  const combinedWellData  = { ...primary.wellData }
+  const combinedWellNames = { ...primary.wellNames }
+  let idCounter = Object.keys(primary.wellData).length + 1
+
+  for (let si = 1; si < results.length; si++) {
+    const { r } = results[si]
+    for (const [id, vals] of Object.entries(r.wellData)) {
+      const newId = `S${idCounter++}`
+      combinedWellData[newId]  = vals
+      combinedWellNames[newId] = r.wellNames[id] || id
+    }
+  }
+
+  const allVals  = Object.values(combinedWellData).flat().filter(v => v != null)
+  const maxVal   = allVals.length ? Math.max(...allVals) : 0
+  const readType = maxVal > 500 ? 'fluorescence' : 'absorbance'
+  const times    = primary.times
+
   return {
     format: 'tecan',
     fileName,
-    sheetName: bestName,
+    sheetName: results.map(r => r.name).join(' + '),
     availableSheets: Object.keys(sheetMap),
-    ...bestResult,
+    meta: {
+      fileName,
+      instrument: 'Tecan',
+      experimentName: results.map(r => r.name).join(' + '),
+    },
+    wellIds:      {},
+    wellNames:    combinedWellNames,
+    readType,
+    wavelengths:  [],
+    plateSize:    null,
+    isKinetic:    times && times.length > 1,
+    isSampleBased: true,
+    times,
+    temps:        null,
+    wellData:     combinedWellData,
   }
 }
 
