@@ -8,7 +8,7 @@ import WellLabeler      from './components/WellLabeler.jsx'
 import ExportModal      from './components/ExportModal.jsx'
 
 export default function App() {
-  const [data,          setData]          = useState(null)
+  const [datasets,      setDatasets]      = useState(null)  // array or null
   const [loading,       setLoading]       = useState(false)
   const [error,         setError]         = useState(null)
   const [timeIdx,       setTimeIdx]       = useState(0)
@@ -16,6 +16,9 @@ export default function App() {
   const [customLabels,  setCustomLabels]  = useState({})
   const [showLabeler,   setShowLabeler]   = useState(false)
   const [showExport,    setShowExport]    = useState(false)
+
+  // Primary dataset (first in array) drives all interactive controls
+  const data = datasets?.[0] ?? null
 
   const handleFile = useCallback(async (file) => {
     setLoading(true)
@@ -28,8 +31,10 @@ export default function App() {
       const result = await parseFile(file)
       if (result.error) {
         setError(result.message || 'Failed to parse file.')
+      } else if (Array.isArray(result)) {
+        setDatasets(result)
       } else {
-        setData(result)
+        setDatasets([result])
       }
     } catch (e) {
       setError(`Unexpected error: ${e.message}`)
@@ -88,7 +93,7 @@ export default function App() {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  if (!data && !loading && !error) {
+  if (!datasets && !loading && !error) {
     return <DropZone onFile={handleFile} />
   }
 
@@ -120,7 +125,7 @@ export default function App() {
               </button>
             </>
           )}
-          <button className="btn-load" onClick={() => { setData(null); setError(null) }}>
+          <button className="btn-load" onClick={() => { setDatasets(null); setError(null) }}>
             Load New File
           </button>
         </div>
@@ -298,6 +303,11 @@ export default function App() {
             </div>
           </div>
 
+          {/* ── Additional sections (multi-section files: Soil_GFP, MG_Data, etc.) ── */}
+          {datasets && datasets.length > 1 && datasets.slice(1).map((section, idx) => (
+            <SectionPanel key={idx} data={section} fmtN={fmtN} timeLabel={timeLabel} />
+          ))}
+
           {/* ── Modals ── */}
           {showLabeler && (
             <WellLabeler
@@ -376,6 +386,71 @@ function EndpointTable({ wellData, wellNames, fmtN }) {
           ))}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+// ── Secondary section panel (for multi-section files) ─────────────────────────
+function SectionPanel({ data, fmtN, timeLabel }) {
+  const [timeIdx, setTimeIdx] = useState(0)
+  if (!data) return null
+
+  const label = data.sectionLabel
+    || (data.groupIndex != null ? `Group ${data.groupIndex}` : null)
+    || data.meta?.experimentName
+    || 'Section'
+
+  const wavLabel = data.wavelengths?.length
+    ? ` · ${data.wavelengths.join(', ')} nm`
+    : ''
+
+  return (
+    <div className="section-panel">
+      <div className="section-panel-header">
+        <h3 className="section-panel-title">{label}{wavLabel}</h3>
+        <span className="section-badge">{data.readType}</span>
+      </div>
+      <div className="main-layout">
+        <div className="panel panel-plate">
+          <div className="panel-header">
+            <h2 className="panel-title">{data.plateSize}-Well Plate</h2>
+            {data.isKinetic && data.times?.length > 1 && (
+              <span className="time-display">t = {timeLabel(data.times[timeIdx])}</span>
+            )}
+          </div>
+          <PlateHeatmap
+            wellData={data.wellData}
+            wellNames={data.wellNames}
+            plateSize={data.plateSize}
+            readType={data.readType}
+            timeIdx={timeIdx}
+            isMatrix={data.isMatrix}
+            nRows={data.nRows}
+            nCols={data.nCols}
+            rowLabels={data.rowLabels}
+            colHeaders={data.colHeaders}
+          />
+          {data.isKinetic && data.times?.length > 1 && (
+            <div className="time-slider-wrap">
+              <span className="slider-label">{timeLabel(data.times[0])}</span>
+              <input type="range" min={0} max={data.times.length - 1} value={timeIdx}
+                onChange={e => setTimeIdx(Number(e.target.value))} className="time-slider" />
+              <span className="slider-label">{timeLabel(data.times[data.times.length - 1])}</span>
+            </div>
+          )}
+        </div>
+        <div className="panel panel-chart">
+          <div className="panel-header">
+            <h2 className="panel-title">{data.isKinetic ? 'Signal Over Time' : 'Well Values'}</h2>
+          </div>
+          {data.isKinetic ? (
+            <KineticChart wellData={data.wellData} times={data.times}
+              wellNames={data.wellNames} readType={data.readType} />
+          ) : (
+            <EndpointTable wellData={data.wellData} wellNames={data.wellNames} fmtN={fmtN} />
+          )}
+        </div>
+      </div>
     </div>
   )
 }

@@ -85,7 +85,7 @@ export default function KineticChart({ wellData, times, wellNames, selectedWells
           {wells.map((w, i) => (
             <Line
               key={w}
-              type="monotone"
+              type="linear"
               dataKey={w}
               stroke={PALETTE[i % PALETTE.length]}
               dot={false}

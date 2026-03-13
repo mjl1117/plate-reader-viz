@@ -6,8 +6,8 @@
  *   ...
  *
  * Col[1] is a temperature label; col[2..N] are consecutive column-number integers.
- * Multiple groups of columns may appear, separated by null cells.
- * Uses the first group as the primary plate data; each data row → plate row A, B, C, ...
+ * Multiple groups of columns may appear, separated by null/undefined cells.
+ * ALL groups are returned as separate datasets.
  */
 
 const PLATE_ROW_LETTERS = 'ABCDEFGHIJKLMNOP'
@@ -48,63 +48,82 @@ export function tryParseTempGrid(rows, sheetName, fileName) {
 
   const headerRow = rows[headerIdx]
 
-  // Find first group of consecutive integers starting from 1 in col[2..]
-  let groupStart = -1, groupEnd = -1
+  // Find ALL groups of consecutive integers separated by null/undefined
+  const groups = []  // [{ start, end }]
+  let gStart = -1
+
   for (let c = 2; c < headerRow.length; c++) {
     const v = headerRow[c]
-    if (groupStart === -1) {
-      if (typeof v === 'number' && Math.round(v) === 1) groupStart = c
+    const isNull = v === null || v === undefined
+    const isNum  = typeof v === 'number'
+
+    if (gStart === -1) {
+      if (isNum && Math.round(v) === 1) gStart = c
     } else {
-      const expected = c - groupStart + 1
-      if (typeof v !== 'number' || Math.round(v) !== expected) {
-        groupEnd = c - 1
-        break
+      const expected = c - gStart + 1
+      if (isNull) {
+        groups.push({ start: gStart, end: c - 1 })
+        gStart = -1
+      } else if (!isNum || Math.round(v) !== expected) {
+        groups.push({ start: gStart, end: c - 1 })
+        gStart = isNum && Math.round(v) === 1 ? c : -1
       }
     }
   }
-  if (groupStart === -1) return null
-  if (groupEnd === -1) groupEnd = headerRow.length - 1
+  if (gStart !== -1) groups.push({ start: gStart, end: headerRow.length - 1 })
+  if (groups.length === 0) return null
 
-  const numCols = groupEnd - groupStart + 1
-
-  // Parse data rows: skip any all-null rows; each valid row → next plate row letter
-  const wellData = {}
+  // Parse data rows (rows after header, skip rows that are all-null in all groups)
   const dataRows = rows.slice(headerIdx + 1).filter(r =>
-    r && r.some((v, ci) => ci >= groupStart && ci <= groupEnd && typeof v === 'number' && !isNaN(v))
+    r && groups.some(g =>
+      r.slice(g.start, g.end + 1).some(v => typeof v === 'number' && !isNaN(v))
+    )
   )
 
-  dataRows.forEach((row, ri) => {
-    if (ri >= PLATE_ROW_LETTERS.length) return
-    const rowLetter = PLATE_ROW_LETTERS[ri]
-    for (let c = groupStart; c <= groupEnd; c++) {
-      const colNum = c - groupStart + 1
-      const v = row[c]
-      if (typeof v === 'number' && !isNaN(v)) {
-        wellData[`${rowLetter}${colNum}`] = [v]
+  // Parse each group as a separate dataset
+  const allDatasets = groups.map((group, gi) => {
+    const wellData = {}
+
+    dataRows.forEach((row, ri) => {
+      if (ri >= PLATE_ROW_LETTERS.length) return
+      const rowLetter = PLATE_ROW_LETTERS[ri]
+      for (let c = group.start; c <= group.end; c++) {
+        const colNum = c - group.start + 1
+        const v = row[c]
+        if (typeof v === 'number' && !isNaN(v)) {
+          wellData[`${rowLetter}${colNum}`] = [v]
+        }
       }
+    })
+
+    if (Object.keys(wellData).length === 0) return null
+
+    const allVals  = Object.values(wellData).flat().filter(v => v != null)
+    const maxVal   = allVals.length ? Math.max(...allVals) : 0
+    const readType = maxVal > 1e5 ? 'luminescence' : maxVal > 5 ? 'fluorescence' : 'absorbance'
+    const plateSize = inferPlateSize(wellData)
+
+    return {
+      format:     'tempgrid',
+      fileName,
+      sheetName,
+      groupIndex: gi + 1,
+      meta: {
+        fileName,
+        instrument:     null,
+        experimentName: `${sheetName} — Group ${gi + 1}`,
+      },
+      wellIds:    {},
+      wellNames:  {},
+      readType,
+      wavelengths: [],
+      plateSize,
+      isKinetic:  false,
+      times:      null,
+      temps:      null,
+      wellData,
     }
-  })
+  }).filter(Boolean)
 
-  if (Object.keys(wellData).length === 0) return null
-
-  const allVals  = Object.values(wellData).flat().filter(v => v != null)
-  const maxVal   = allVals.length ? Math.max(...allVals) : 0
-  const readType = maxVal > 1e5 ? 'luminescence' : maxVal > 5 ? 'fluorescence' : 'absorbance'
-  const plateSize = inferPlateSize(wellData)
-
-  return {
-    format:    'tempgrid',
-    fileName,
-    sheetName,
-    meta:      { fileName, instrument: null, experimentName: sheetName },
-    wellIds:   {},
-    wellNames: {},
-    readType,
-    wavelengths: [],
-    plateSize,
-    isKinetic: false,
-    times:     null,
-    temps:     null,
-    wellData,
-  }
+  return allDatasets.length > 0 ? allDatasets : null
 }

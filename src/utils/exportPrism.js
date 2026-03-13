@@ -31,15 +31,34 @@ function groupWells(wellData, wellNames) {
   return groups
 }
 
+// ── Channel label builder ──────────────────────────────────────────────────────
+// Builds a human-readable label from wavelengths, section label, and read type.
+// Used as the X-column label in Prism exports.
+
+export function buildChannelLabel(data) {
+  const parts = []
+  if (data.sectionLabel) parts.push(data.sectionLabel)
+  if (data.wavelengths?.length) {
+    const w = data.wavelengths[0]
+    parts.push(w.includes('/') ? `Ex/Em ${w} nm` : `${w} nm`)
+  } else if (!data.sectionLabel && data.readType) {
+    parts.push(data.readType.charAt(0).toUpperCase() + data.readType.slice(1))
+  }
+  return parts.join(' · ')
+}
+
 // ── Row builders ──────────────────────────────────────────────────────────────
 
-export function buildKineticRows(wellData, times, wellNames, unitPref = 'auto') {
-  const unit   = resolveTimeUnit(times, unitPref)
-  const groups = groupWells(wellData, wellNames)
-  const names  = Object.keys(groups)
+export function buildKineticRows(wellData, times, wellNames, unitPref = 'auto', data = null) {
+  const unit     = resolveTimeUnit(times, unitPref)
+  const groups   = groupWells(wellData, wellNames)
+  const names    = Object.keys(groups)
+  const chanLabel = data ? buildChannelLabel(data) : ''
 
-  // Header: X (unit), GroupA, GroupA, GroupA, GroupB, ...
-  const header = [`X (${unit})`]
+  // X column header: "Time (hours)" or "Time (hours) · GFP · Ex/Em 480/520 nm"
+  const xLabel = chanLabel ? `Time (${unit}) · ${chanLabel}` : `Time (${unit})`
+
+  const header = [xLabel]
   for (const n of names) {
     for (let r = 0; r < groups[n].length; r++) header.push(n)
   }
@@ -58,12 +77,17 @@ export function buildKineticRows(wellData, times, wellNames, unitPref = 'auto') 
   return rows
 }
 
-export function buildEndpointRows(wellData, wellNames) {
-  const groups = groupWells(wellData, wellNames)
-  const names  = Object.keys(groups)
-  const maxLen = Math.max(...names.map(n => groups[n].length))
+export function buildEndpointRows(wellData, wellNames, data = null) {
+  const groups   = groupWells(wellData, wellNames)
+  const names    = Object.keys(groups)
+  const maxLen   = Math.max(...names.map(n => groups[n].length))
+  const chanLabel = data ? buildChannelLabel(data) : ''
 
-  const rows = [names]
+  // If we have a channel label, prepend a metadata row so Prism knows the source
+  const rows = []
+  if (chanLabel) rows.push([`# ${chanLabel}`, ...Array(names.length - 1).fill('')])
+  rows.push(names)
+
   for (let r = 0; r < maxLen; r++) {
     rows.push(names.map(n => {
       const id = groups[n][r]
@@ -77,8 +101,8 @@ export function buildEndpointRows(wellData, wellNames) {
 
 export function getPreviewRows(data, wellNames, unitPref = 'auto', maxDataRows = 4) {
   const rows = data.isKinetic
-    ? buildKineticRows(data.wellData, data.times, wellNames, unitPref)
-    : buildEndpointRows(data.wellData, wellNames)
+    ? buildKineticRows(data.wellData, data.times, wellNames, unitPref, data)
+    : buildEndpointRows(data.wellData, wellNames, data)
   return rows.slice(0, maxDataRows + 1)
 }
 
@@ -104,8 +128,8 @@ function makeFilename(data, ext) {
 
 export function exportPrismCsv(data, wellNames, unitPref = 'auto') {
   const rows = data.isKinetic
-    ? buildKineticRows(data.wellData, data.times, wellNames, unitPref)
-    : buildEndpointRows(data.wellData, wellNames)
+    ? buildKineticRows(data.wellData, data.times, wellNames, unitPref, data)
+    : buildEndpointRows(data.wellData, wellNames, data)
   const csv  = rowsToCsv(rows)
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
   const url  = URL.createObjectURL(blob)
@@ -118,8 +142,8 @@ export function exportPrismCsv(data, wellNames, unitPref = 'auto') {
 
 export function exportPrismXlsx(data, wellNames, unitPref = 'auto') {
   const rows = data.isKinetic
-    ? buildKineticRows(data.wellData, data.times, wellNames, unitPref)
-    : buildEndpointRows(data.wellData, wellNames)
+    ? buildKineticRows(data.wellData, data.times, wellNames, unitPref, data)
+    : buildEndpointRows(data.wellData, wellNames, data)
   const ws = XLSX.utils.aoa_to_sheet(rows)
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, 'Prism Export')
