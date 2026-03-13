@@ -23,7 +23,7 @@ export default function App() {
   const handleFile = useCallback(async (file) => {
     setLoading(true)
     setError(null)
-    setData(null)
+    setDatasets(null)
     setTimeIdx(0)
     setSelectedWells(new Set())
     setCustomLabels({})
