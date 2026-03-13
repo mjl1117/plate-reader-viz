@@ -125,23 +125,28 @@ export function parseBiotek(text, fileName) {
   }
 
   // ── Parse Layout grid (tab-delimited format) ───────────────────────────────
+  // Handles two variants:
+  //   Classic XLSX/tab:  col[0]=rowLetter, col[1..]=well names
+  //   Synergy H1 XLSX:   col[0]='',        col[1]=rowLetter, col[2..]=well names
   if (layoutStart > -1) {
     let i = layoutStart + 1
-    // First row should be the column numbers: [empty, 1, 2, ..., 12]
     let colNumbers = []
-    if (split[i] && split[i][0] === '' && split[i].some(c => /^\d+$/.test(c))) {
+    if (split[i] && split[i].some(c => /^\d+$/.test(c))) {
       colNumbers = split[i]
       i++
     }
     while (i < rawLines.length) {
       const row = split[i]
-      const rowLetter = row[0]
-      if (!/^[A-P]$/.test(rowLetter)) break
-      for (let c = 1; c < row.length; c++) {
+      // Detect which column holds the row letter
+      const rowLetter = /^[A-P]$/.test(row[0]) ? row[0]
+                      : /^[A-P]$/.test(row[1]) ? row[1]
+                      : null
+      if (!rowLetter) break
+      const dataStart = /^[A-P]$/.test(row[0]) ? 1 : 2
+      for (let c = dataStart; c < row.length; c++) {
         const cell = row[c]
         if (!cell || cell === 'Well ID') continue
-        // Determine column number from header or from index
-        const colNum = parseInt(colNumbers[c] || c)
+        const colNum = parseInt(colNumbers[c] || (c - dataStart + 1))
         if (!colNum) continue
         const pos = `${rowLetter}${colNum}`
         if (!wellNames[pos]) wellNames[pos] = cell
@@ -254,7 +259,38 @@ export function parseBiotek(text, fileName) {
     }
   }
 
-  // ── Fallback: try to extract from the Results section (BioTek calc results) ─
+  // ── Fallback A: Synergy H1 XLSX Results grid ─────────────────────────────
+  // Format: after "Results", a column-number header row then data rows with
+  // col[0]='' and col[1]=rowLetter (A-H/A-P), col[2+]=values.
+  if (Object.keys(wellData).length === 0 && calcResultsLine > -1) {
+    let i = calcResultsLine + 1
+    // Skip "Actual Temperature:" line and blanks
+    while (i < rawLines.length && (!rawLines[i].trim() || (split[i]?.[0] ?? '').toLowerCase().startsWith('actual'))) i++
+    // Look for the column-number header: col[0]='' col[1]='' col[2]='1' col[3]='2' ...
+    if (split[i] && split[i][0] === '' && split[i][1] === '' && /^\d+$/.test(split[i][2] || '')) {
+      const colNums = split[i]
+      i++
+      while (i < rawLines.length) {
+        const row = split[i]
+        const rowLetter = /^[A-P]$/.test(row[1]) ? row[1] : null
+        if (!rowLetter) break
+        for (let c = 2; c < row.length; c++) {
+          const cell = row[c]
+          if (!cell || cell === 'Well ID') continue
+          const colNum = parseInt(colNums[c])
+          if (!colNum) continue
+          const v = parseFloat(cell)
+          if (isNaN(v)) continue
+          const pos = `${rowLetter}${colNum}`
+          wellData[pos] = [v]
+          // Layout: populate wellNames from the layout section already parsed above
+        }
+        i++
+      }
+    }
+  }
+
+  // ── Fallback B: try to extract from the Results section (BioTek calc results) ─
   // The Results section has: "Well ID" row, "Well" row, then metric rows.
   // The "Well" row gives us well positions, subsequent rows give values.
   if (Object.keys(wellData).length === 0 && calcResultsLine > -1) {
