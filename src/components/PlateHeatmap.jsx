@@ -11,51 +11,98 @@ function getLayout(plateSize) {
   return PLATE_LAYOUTS[plateSize] || PLATE_LAYOUTS[96]
 }
 
-// Color scales ─────────────────────────────────────────────────────────────────
+// ── Wavelength → approximate RGB (visible spectrum 380–780 nm) ────────────────
+function wavelengthToRGB(nm) {
+  if (nm == null) return null
+  nm = Math.max(380, Math.min(780, nm))
+  let r = 0, g = 0, b = 0
+  if      (nm < 440) { r = -(nm-440)/60;    g = 0;           b = 1           }
+  else if (nm < 490) { r = 0;               g = (nm-440)/50; b = 1           }
+  else if (nm < 510) { r = 0;               g = 1;           b = -(nm-510)/20 }
+  else if (nm < 580) { r = (nm-510)/70;     g = 1;           b = 0           }
+  else if (nm < 645) { r = 1;               g = -(nm-645)/65; b = 0          }
+  else               { r = 1;               g = 0;           b = 0           }
+
+  // Intensity falloff at spectrum edges
+  let factor = 1.0
+  if      (nm < 420) factor = 0.3 + 0.7 * (nm - 380) / 40
+  else if (nm > 700) factor = 0.3 + 0.7 * (780 - nm) / 80
+
+  return [
+    Math.round(255 * Math.max(0, Math.min(1, r)) * factor),
+    Math.round(255 * Math.max(0, Math.min(1, g)) * factor),
+    Math.round(255 * Math.max(0, Math.min(1, b)) * factor),
+  ]
+}
+
+// Extract emission wavelength from the wavelengths array.
+// "480/520" → 520 (emission), "600" → 600 (single), otherwise null.
+function getEmissionWavelength(wavelengths) {
+  if (!wavelengths?.length) return null
+  const w = String(wavelengths[0]).trim()
+  if (w.includes('/')) {
+    const em = parseInt(w.split('/')[1])
+    return (isNaN(em) || em < 300 || em > 800) ? null : em
+  }
+  const n = parseInt(w)
+  return (isNaN(n) || n < 300 || n > 800) ? null : n
+}
+
+// ── Color scales ──────────────────────────────────────────────────────────────
 function lerp(a, b, t) { return a + (b - a) * t }
 
-function valueToColor(t, readType) {
+function valueToColor(t, readType, emWavelength) {
   t = Math.max(0, Math.min(1, t))
+
+  // Wavelength-based: dark → spectral color of emission/measurement
+  if (emWavelength != null) {
+    const rgb = wavelengthToRGB(emWavelength)
+    if (rgb) {
+      const [wr, wg, wb] = rgb
+      return `rgb(${Math.round(lerp(12, wr, t))},${Math.round(lerp(12, wg, t))},${Math.round(lerp(12, wb, t))})`
+    }
+  }
+
+  // Fallback color schemes by read type
   if (readType === 'fluorescence') {
-    // Deep charcoal → vivid emerald
     const r = Math.round(lerp(15, 16,  t))
     const g = Math.round(lerp(20, 210, t))
     const b = Math.round(lerp(30, 120, t))
     return `rgb(${r},${g},${b})`
   }
   if (readType === 'absorbance') {
-    // Pale sky-blue → deep navy
     const r = Math.round(lerp(220, 10,  t))
     const g = Math.round(lerp(235, 60, t))
     const b = Math.round(lerp(255, 180, t))
     return `rgb(${r},${g},${b})`
   }
   if (readType === 'luminescence') {
-    // Near-black → bright amber
     const r = Math.round(lerp(10,  255, t))
     const g = Math.round(lerp(10,  200, t))
     const b = Math.round(lerp(10,  20,  t))
     return `rgb(${r},${g},${b})`
   }
-  // Default: indigo → coral
   const r = Math.round(lerp(60,  255, t))
   const g = Math.round(lerp(20,  100, t))
   const b = Math.round(lerp(120, 60,  t))
   return `rgb(${r},${g},${b})`
 }
 
-function textColorFor(t, readType) {
-  // Dark text on light backgrounds, light on dark
+function textColorFor(t, readType, emWavelength) {
+  // When using wavelength colors, always use light text on dark BG
+  if (emWavelength != null) return t > 0.3 ? '#0a1929' : '#e2e8f0'
   if (readType === 'absorbance') return t > 0.5 ? '#e2e8f0' : '#0a1929'
   return t > 0.3 ? '#0a1929' : '#e2e8f0'
 }
 
 export default function PlateHeatmap({
-  wellData, wellNames, plateSize, readType,
+  wellData, wellNames, plateSize, readType, wavelengths,
   timeIdx = 0, selectedWells, onWellClick,
   isMatrix, nRows, nCols, rowLabels, colHeaders,
 }) {
   const [tooltip, setTooltip] = useState(null)
+
+  const emWavelength = useMemo(() => getEmissionWavelength(wavelengths), [wavelengths])
 
   // ── Build display data ─────────────────────────────────────────────────────
   const { rows, cols, values, vMin, vMax } = useMemo(() => {
@@ -82,7 +129,7 @@ export default function PlateHeatmap({
       values[pos] = series[timeIdx] ?? null
     }
 
-    const allV = Object.values(values).filter(v => v != null)
+    const allV = Object.values(values).filter(v => v != null && typeof v === 'number' && !isNaN(v))
     const vMin = allV.length ? Math.min(...allV) : 0
     const vMax = allV.length ? Math.max(...allV) : 1
 
@@ -93,8 +140,8 @@ export default function PlateHeatmap({
 
   // ── SVG layout ─────────────────────────────────────────────────────────────
   const isSmall  = !isMatrix && (plateSize === 384)
-  const R        = isSmall ? 10 : 16   // well circle radius
-  const gap      = isSmall ? 24 : 36   // well center spacing
+  const R        = isSmall ? 10 : 16
+  const gap      = isSmall ? 24 : 36
   const padLeft  = isSmall ? 28 : 42
   const padTop   = isSmall ? 22 : 32
   const svgW     = padLeft + cols.length * gap + 12
@@ -145,8 +192,8 @@ export default function PlateHeatmap({
             {cols.map((c, ci) => {
               const pos = isMatrix ? `R${ri + 1}C${ci + 1}` : `${r}${c}`
               const v   = values[pos]
-              const t   = v != null ? getT(v) : -1
-              const bg  = t >= 0 ? valueToColor(t, readType) : '#1a2235'
+              const t   = (v != null && typeof v === 'number' && !isNaN(v)) ? getT(v) : -1
+              const bg  = t >= 0 ? valueToColor(t, readType, emWavelength) : '#1a2235'
               const isSelected = selectedWells?.has(pos)
               const cx  = padLeft + ci * gap
               const cy  = padTop  + ri * gap
@@ -167,12 +214,12 @@ export default function PlateHeatmap({
                     stroke={isSelected ? '#63cab7' : (t >= 0 ? 'rgba(255,255,255,0.06)' : '#1e2d42')}
                     strokeWidth={isSelected ? 1.5 : 0.5}
                   />
-                  {!isSmall && v != null && (
+                  {!isSmall && v != null && typeof v === 'number' && !isNaN(v) && (
                     <text
                       x={cx} y={cy + 3}
                       textAnchor="middle"
                       fontSize={8}
-                      fill={textColorFor(t, readType)}
+                      fill={textColorFor(t, readType, emWavelength)}
                       style={{ pointerEvents: 'none', userSelect: 'none' }}
                     >
                       {fmtVal(v)}
@@ -198,12 +245,12 @@ export default function PlateHeatmap({
       )}
 
       {/* Color bar */}
-      <ColorBar vMin={vMin} vMax={vMax} readType={readType} />
+      <ColorBar vMin={vMin} vMax={vMax} readType={readType} emWavelength={emWavelength} />
     </div>
   )
 }
 
-function ColorBar({ vMin, vMax, readType }) {
+function ColorBar({ vMin, vMax, readType, emWavelength }) {
   const steps = 80
   const fmtN = (n) => {
     if (n == null || isNaN(n)) return '—'
@@ -213,7 +260,7 @@ function ColorBar({ vMin, vMax, readType }) {
   }
 
   const gradient = Array.from({ length: steps }, (_, i) =>
-    valueToColor(i / (steps - 1), readType)
+    valueToColor(i / (steps - 1), readType, emWavelength)
   ).join(',')
 
   return (

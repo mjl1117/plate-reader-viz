@@ -176,6 +176,7 @@ export default function App() {
                   wellNames={mergedNames}
                   plateSize={data.plateSize}
                   readType={data.readType}
+                  wavelengths={data.wavelengths}
                   timeIdx={timeIdx}
                   selectedWells={selectedWells}
                   onWellClick={toggleWell}
@@ -423,6 +424,7 @@ function SectionPanel({ data, fmtN, timeLabel }) {
             wellNames={data.wellNames}
             plateSize={data.plateSize}
             readType={data.readType}
+            wavelengths={data.wavelengths}
             timeIdx={timeIdx}
             isMatrix={data.isMatrix}
             nRows={data.nRows}

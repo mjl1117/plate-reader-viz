@@ -4,7 +4,8 @@
  * as well as XLSX files (passed in as pre-converted CSV text via SheetJS).
  *
  * Supported read types: kinetic fluorescence/absorbance/luminescence, endpoint.
- * Supported plate formats: 96-well, 384-well.
+ * Supported plate formats: 6/24/96/384-well.
+ * Multi-wavelength: returns an array of datasets when multiple blocks are found.
  */
 
 const WELL_PATTERN = /^[A-P]\d{1,2}$/
@@ -46,25 +47,33 @@ function inferPlateSize(wellData) {
 }
 
 function inferReadType(wavelengths, meta, wellData) {
-  // Check luminescence
   if (wavelengths.some(w => /^lum/i.test(w))) return 'luminescence'
   if ((meta.readTypeRaw || '').toLowerCase().includes('lum')) return 'luminescence'
 
-  // Heuristic: if all values are small decimals → absorbance
   const allValues = Object.values(wellData).flat().filter(v => v != null && !isNaN(v))
   if (allValues.length > 0) {
     const max = Math.max(...allValues)
     if (max < 5) return 'absorbance'
   }
 
-  // Check wavelength range: excitation 300-500nm often fluorescence
   if (wavelengths.some(w => !isNaN(Number(w)) && Number(w) >= 300 && Number(w) <= 600)) {
-    const allValues2 = Object.values(wellData).flat().filter(v => v != null && !isNaN(v))
-    const max2 = Math.max(...allValues2)
+    const max2 = Math.max(...Object.values(wellData).flat().filter(v => v != null && !isNaN(v)))
     return max2 > 10 ? 'fluorescence' : 'absorbance'
   }
 
   return 'fluorescence'
+}
+
+// Returns the wavelength string on the last non-blank line before `idx`
+// if it looks like a wavelength line (digits/commas or "Lum"), else null.
+function findPrecedingWavelength(rawLines, idx) {
+  for (let j = idx - 1; j >= Math.max(0, idx - 5); j--) {
+    const candidate = rawLines[j].trim()
+    if (!candidate) continue
+    if (/^[\d,\s]+$/.test(candidate) || /^lum$/i.test(candidate)) return candidate
+    break
+  }
+  return null
 }
 
 export function parseBiotek(text, fileName) {
@@ -92,8 +101,7 @@ export function parseBiotek(text, fileName) {
     }
     else if (k.match(/Wavelengths/i))                meta.wavelengthsMeta = v
     else if (k.match(/Start Kinetic/i))              meta.isKineticFromMeta = true
-    // Time of day (metadata) looks like "4:16:12 PM" — has AM/PM
-    else if (k === 'Time' && v.match(/AM|PM/i))     meta.timeOfDay = v
+    else if (k === 'Time' && v.match(/AM|PM/i))      meta.timeOfDay = v
     else if (k.match(/Experiment File Path/i)) {
       const parts = v.replace(/\\/g, '/').split('/')
       meta.experimentName = parts[parts.length - 1].replace(/\.[^.]+$/, '')
@@ -112,13 +120,12 @@ export function parseBiotek(text, fileName) {
     if (t0 === 'Results' && calcResultsLine === -1) { calcResultsLine = i; continue }
   }
 
-  // ── Parse Well IDs section (comma-delimited format) ────────────────────────
-  const wellIds = {}   // sampleName → wellPosition  e.g. "SPL1" → "A9"
-  const wellNames = {} // wellPosition → sampleName  e.g. "A9" → "SPL1"
+  // ── Parse Well IDs section ─────────────────────────────────────────────────
+  const wellIds   = {}
+  const wellNames = {}
 
   if (wellIdsStart > -1) {
     let i = wellIdsStart + 1
-    // Skip optional header row "Well ID,Name"
     if ((split[i]?.[0] || '').toLowerCase().includes('well id')) i++
     while (i < rawLines.length) {
       const line = rawLines[i].trim()
@@ -129,17 +136,14 @@ export function parseBiotek(text, fileName) {
       const name = parts[0]?.trim()
       const pos  = parts[1]?.trim()
       if (name && pos && WELL_PATTERN.test(pos)) {
-        wellIds[name] = pos
+        wellIds[name]  = pos
         wellNames[pos] = name
       }
       i++
     }
   }
 
-  // ── Parse Layout grid (tab-delimited format) ───────────────────────────────
-  // Handles two variants:
-  //   Classic XLSX/tab:  col[0]=rowLetter, col[1..]=well names
-  //   Synergy H1 XLSX:   col[0]='',        col[1]=rowLetter, col[2..]=well names
+  // ── Parse Layout grid ──────────────────────────────────────────────────────
   if (layoutStart > -1) {
     let i = layoutStart + 1
     let colNumbers = []
@@ -149,7 +153,6 @@ export function parseBiotek(text, fileName) {
     }
     while (i < rawLines.length) {
       const row = split[i]
-      // Detect which column holds the row letter
       const rowLetter = /^[A-P]$/.test(row[0]) ? row[0]
                       : /^[A-P]$/.test(row[1]) ? row[1]
                       : null
@@ -168,117 +171,96 @@ export function parseBiotek(text, fileName) {
     }
   }
 
-  // ── Find the data header (line starting with "Time" that has well columns) ──
-  let dataHeaderIdx   = -1
-  let wavelengthsLine = -1
-
+  // ── Find ALL kinetic data headers (each wavelength block has "Time" + wells) ─
+  const allKineticHeaders = []
   for (let i = 0; i < rawLines.length; i++) {
     const cols = split[i]
     if (cols[0]?.toLowerCase() === 'time' && cols.some(c => WELL_PATTERN.test(c))) {
-      dataHeaderIdx = i
-      // Walk backward to find the wavelength line (last non-blank before data header)
-      for (let j = i - 1; j >= Math.max(0, i - 5); j--) {
-        const candidate = rawLines[j].trim()
-        if (!candidate) continue
-        // Wavelength line: contains only digits, commas, spaces, or "Lum"
-        if (/^[\d,\s]+$/.test(candidate) || /^lum$/i.test(candidate)) {
-          wavelengthsLine = j
-        }
-        break // stop at first non-blank line before data header
-      }
-      break
+      const waveStr = findPrecedingWavelength(rawLines, i)
+      allKineticHeaders.push({ idx: i, waveStr })
     }
   }
 
-  // ── Also handle endpoint format: no "Time" column, just well values ────────
-  // Look for a line that's purely well positions (A1, A2, ...) — endpoint header
-  let endpointHeaderIdx = -1
-  if (dataHeaderIdx === -1) {
+  // ── If no kinetic, look for endpoint well-position headers ─────────────────
+  const allEndpointHeaders = []
+  if (allKineticHeaders.length === 0) {
     for (let i = 0; i < rawLines.length; i++) {
       const cols = split[i].filter(c => c)
       if (cols.length >= 4 && cols.every(c => WELL_PATTERN.test(c))) {
-        endpointHeaderIdx = i
-        // Wavelength line search
-        for (let j = i - 1; j >= Math.max(0, i - 5); j--) {
-          const candidate = rawLines[j].trim()
-          if (!candidate) continue
-          if (/^[\d,\s]+$/.test(candidate) || /^lum$/i.test(candidate)) {
-            wavelengthsLine = j
-          }
-          break
+        const waveStr = findPrecedingWavelength(rawLines, i)
+        allEndpointHeaders.push({ idx: i, waveStr })
+      }
+    }
+  }
+
+  const isKinetic     = allKineticHeaders.length > 0
+  const headerList    = isKinetic ? allKineticHeaders : allEndpointHeaders
+  const outerStopLine = calcResultsLine > -1 ? calcResultsLine : rawLines.length
+
+  // ── Parse each data block ──────────────────────────────────────────────────
+  const blockDatasets = []
+
+  for (let bi = 0; bi < headerList.length; bi++) {
+    const { idx: headerIdx, waveStr } = headerList[bi]
+    const nextBlockIdx = headerList[bi + 1]?.idx ?? outerStopLine
+
+    const blockWavelengths = waveStr
+      ? waveStr.split(/[,\s]+/).map(w => w.trim()).filter(Boolean)
+      : []
+
+    const hdrCols  = split[headerIdx]
+    const wellCols = hdrCols.map((h, i) => ({ h, i })).filter(({ h }) => WELL_PATTERN.test(h))
+    if (wellCols.length === 0) continue
+
+    const bWellData = {}
+    const bTimes    = []
+    const bTemps    = []
+    wellCols.forEach(({ h }) => { bWellData[h] = [] })
+
+    if (isKinetic) {
+      for (let i = headerIdx + 1; i < nextBlockIdx; i++) {
+        const line = rawLines[i].trim()
+        if (!line) continue
+        const cols    = split[i]
+        const timeStr = cols[0]
+        if (!timeStr || !timeStr.includes(':')) continue
+        bTimes.push(parseTimeToSeconds(timeStr))
+        bTemps.push(parseFloat(cols[1]) || null)
+        for (const { h, i: ci } of wellCols) {
+          const v = parseFloat(cols[ci])
+          bWellData[h].push(isNaN(v) ? null : v)
+        }
+      }
+    } else {
+      for (let i = headerIdx + 1; i < nextBlockIdx; i++) {
+        const line = rawLines[i].trim()
+        if (!line) continue
+        const cols = split[i]
+        for (const { h, i: ci } of wellCols) {
+          const v = parseFloat(cols[ci])
+          bWellData[h].push(isNaN(v) ? null : v)
         }
         break
       }
     }
+
+    const hasData = Object.values(bWellData).some(arr => arr.some(v => v != null && !isNaN(v)))
+    if (!hasData) continue
+
+    blockDatasets.push({
+      wellData:    bWellData,
+      wavelengths: blockWavelengths,
+      times:       isKinetic ? bTimes : null,
+      temps:       isKinetic ? bTemps : null,
+      isKinetic:   isKinetic && bTimes.length > 0,
+    })
   }
 
-  // ── Parse wavelengths ──────────────────────────────────────────────────────
-  let wavelengths = []
-  if (wavelengthsLine > -1) {
-    const waveStr = rawLines[wavelengthsLine].trim()
-    wavelengths = waveStr.split(/[,\s]+/).map(w => w.trim()).filter(Boolean)
-  }
-
-  // ── Parse kinetic data ─────────────────────────────────────────────────────
-  const wellData  = {}
-  const times     = []
-  const temps     = []
-  let   isKinetic = false
-
-  if (dataHeaderIdx > -1) {
-    isKinetic = true
-    const headers = split[dataHeaderIdx]
-
-    // Map column index → well position
-    const wellCols = headers
-      .map((h, i) => ({ h, i }))
-      .filter(({ h }) => WELL_PATTERN.test(h))
-
-    wellCols.forEach(({ h }) => { wellData[h] = [] })
-
-    // Data rows end at blank line, "Results", or "Calculated Results"
-    const stopAt = calcResultsLine > -1 ? calcResultsLine : rawLines.length
-    for (let i = dataHeaderIdx + 1; i < stopAt; i++) {
-      const line = rawLines[i].trim()
-      if (!line) continue
-      const cols = split[i]
-      const timeStr = cols[0]
-      if (!timeStr.includes(':')) continue // not a time row
-      times.push(parseTimeToSeconds(timeStr))
-      temps.push(parseFloat(cols[1]) || null)
-      for (const { h, i: ci } of wellCols) {
-        const v = parseFloat(cols[ci])
-        wellData[h].push(isNaN(v) ? null : v)
-      }
-    }
-  }
-
-  // ── Parse endpoint data ────────────────────────────────────────────────────
-  if (endpointHeaderIdx > -1 && !isKinetic) {
-    const headers = split[endpointHeaderIdx]
-    const wellCols = headers.map((h, i) => ({ h, i })).filter(({ h }) => WELL_PATTERN.test(h))
-    wellCols.forEach(({ h }) => { wellData[h] = [] })
-    // Next non-blank row is the values
-    for (let i = endpointHeaderIdx + 1; i < rawLines.length; i++) {
-      const line = rawLines[i].trim()
-      if (!line) continue
-      const cols = split[i]
-      for (const { h, i: ci } of wellCols) {
-        const v = parseFloat(cols[ci])
-        wellData[h].push(isNaN(v) ? null : v)
-      }
-      break // only one row of values for endpoint
-    }
-  }
-
-  // ── Fallback A: Synergy H1 XLSX Results grid ─────────────────────────────
-  // Format: after "Results", a column-number header row then data rows with
-  // col[0]='' and col[1]=rowLetter (A-H/A-P), col[2+]=values.
-  if (Object.keys(wellData).length === 0 && calcResultsLine > -1) {
+  // ── Fallback A: Synergy H1 XLSX Results grid ──────────────────────────────
+  const fallbackWellData = {}
+  if (blockDatasets.length === 0 && calcResultsLine > -1) {
     let i = calcResultsLine + 1
-    // Skip "Actual Temperature:" line and blanks
     while (i < rawLines.length && (!rawLines[i].trim() || (split[i]?.[0] ?? '').toLowerCase().startsWith('actual'))) i++
-    // Look for the column-number header: col[0]='' col[1]='' col[2]='1' col[3]='2' ...
     if (split[i] && split[i][0] === '' && split[i][1] === '' && /^\d+$/.test(split[i][2] || '')) {
       const colNums = split[i]
       i++
@@ -293,46 +275,60 @@ export function parseBiotek(text, fileName) {
           if (!colNum) continue
           const v = parseFloat(cell)
           if (isNaN(v)) continue
-          const pos = `${rowLetter}${colNum}`
-          wellData[pos] = [v]
-          // Layout: populate wellNames from the layout section already parsed above
+          fallbackWellData[`${rowLetter}${colNum}`] = [v]
         }
         i++
       }
     }
   }
 
-  // ── Fallback B: try to extract from the Results section (BioTek calc results) ─
-  // The Results section has: "Well ID" row, "Well" row, then metric rows.
-  // The "Well" row gives us well positions, subsequent rows give values.
-  if (Object.keys(wellData).length === 0 && calcResultsLine > -1) {
+  // ── Fallback B: BioTek calculated results section ─────────────────────────
+  if (Object.keys(fallbackWellData).length === 0 && calcResultsLine > -1) {
     let i = calcResultsLine + 1
     while (i < rawLines.length && !rawLines[i].trim()) i++
-    // Find the "Well" row
     let wellRow = -1
     for (let j = i; j < Math.min(i + 5, rawLines.length); j++) {
       if (split[j][0]?.toLowerCase() === 'well') { wellRow = j; break }
     }
     if (wellRow > -1) {
       const wellPositions = split[wellRow].slice(1).filter(w => WELL_PATTERN.test(w))
-      wellPositions.forEach(w => { wellData[w] = [null] })
-      // Next metric row (e.g., "Max V [385]") gives numeric values
+      wellPositions.forEach(w => { fallbackWellData[w] = [null] })
       for (let j = wellRow + 1; j < Math.min(wellRow + 3, rawLines.length); j++) {
         const row = split[j]
         if (!row[0] || row[0].startsWith('R-') || row[0].startsWith('t ') || row[0].startsWith('Lag')) continue
         const vals = row.slice(1)
         wellPositions.forEach((w, idx) => {
           const v = parseFloat(vals[idx])
-          if (!isNaN(v)) wellData[w] = [v]
+          if (!isNaN(v)) fallbackWellData[w] = [v]
         })
-        if (wellPositions.some(w => wellData[w][0] !== null)) break
+        if (wellPositions.some(w => fallbackWellData[w][0] !== null)) break
       }
     }
   }
 
-  const plateSize = inferPlateSize(wellData)
-  const readType  = inferReadType(wavelengths, meta, wellData)
+  // ── Build output ───────────────────────────────────────────────────────────
+  const makeResult = (block) => ({
+    format:     'biotek',
+    fileName,
+    meta,
+    wellIds,
+    wellNames,
+    readType:   inferReadType(block.wavelengths, meta, block.wellData),
+    wavelengths: block.wavelengths,
+    plateSize:  inferPlateSize(block.wellData),
+    isKinetic:  block.isKinetic,
+    times:      block.isKinetic ? block.times : null,
+    temps:      block.isKinetic ? block.temps : null,
+    wellData:   block.wellData,
+  })
 
+  if (blockDatasets.length === 1) return makeResult(blockDatasets[0])
+  if (blockDatasets.length > 1)  return blockDatasets.map(makeResult)
+
+  // Single fallback result
+  const fbWavelengths = []
+  const plateSize = inferPlateSize(fallbackWellData)
+  const readType  = inferReadType(fbWavelengths, meta, fallbackWellData)
   return {
     format: 'biotek',
     fileName,
@@ -340,11 +336,11 @@ export function parseBiotek(text, fileName) {
     wellIds,
     wellNames,
     readType,
-    wavelengths,
+    wavelengths: fbWavelengths,
     plateSize,
-    isKinetic,
-    times:    isKinetic ? times : null,
-    temps:    isKinetic ? temps : null,
-    wellData,
+    isKinetic:  false,
+    times:      null,
+    temps:      null,
+    wellData:   fallbackWellData,
   }
 }
