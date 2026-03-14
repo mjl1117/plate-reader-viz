@@ -33,26 +33,29 @@ function inferPlateSize(wellData) {
 export function tryParseTempGrid(rows, sheetName, fileName) {
   if (!rows || rows.length < 2) return null
 
-  // Find the header row: col[1] is a temperature label, col[2] = 1 (first column number)
+  // Find the header row: col[0] or col[1] is a temperature label, followed by 1, 2, 3, ...
+  // Format A: [null, 'Temperature(°C)', 1, 2, ..., 12, ...]   (col[2] = first number)
+  // Format B: ['Temperature(°C)', 1, 2, ..., 12, ...]          (col[1] = first number)
   let headerIdx = -1
   for (let i = 0; i < Math.min(rows.length, 5); i++) {
     const row = rows[i] || []
+    const c0 = String(row[0] ?? '').trim().toLowerCase()
     const c1 = String(row[1] ?? '').trim().toLowerCase()
-    if ((c1.includes('temp') || c1.includes('t°')) &&
-        (row[2] === 1 || row[2] === 1.0)) {
-      headerIdx = i
-      break
-    }
+    const hasTemp = c0.includes('temp') || c0.includes('t°') ||
+                    c1.includes('temp') || c1.includes('t°')
+    const hasFirst = row[1] === 1 || row[1] === 1.0 || row[2] === 1 || row[2] === 1.0
+    if (hasTemp && hasFirst) { headerIdx = i; break }
   }
   if (headerIdx === -1) return null
 
   const headerRow = rows[headerIdx]
 
-  // Find ALL groups of consecutive integers separated by null/undefined
+  // Find ALL groups of consecutive integers separated by null/undefined.
+  // Start at c=1 so we catch groups that begin right after the temperature label (Format B).
   const groups = []  // [{ start, end }]
   let gStart = -1
 
-  for (let c = 2; c < headerRow.length; c++) {
+  for (let c = 1; c < headerRow.length; c++) {
     const v = headerRow[c]
     const isNull = v === null || v === undefined
     const isNum  = typeof v === 'number'

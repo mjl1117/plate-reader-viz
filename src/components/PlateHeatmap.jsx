@@ -54,15 +54,18 @@ function lerp(a, b, t) { return a + (b - a) * t }
 function valueToColor(t, readType, emWavelength) {
   t = Math.max(0, Math.min(1, t))
 
-  // Wavelength-based: dark → complementary color of emission wavelength.
-  // The complement represents the perceived sample color (e.g. absorbing blue → appears yellow).
+  // Wavelength-based color:
+  // • Absorbance: show transmitted/reflected color = complement of absorbed wavelength
+  //   (absorbing green light → solution appears red)
+  // • Fluorescence/luminescence: show emission wavelength color directly
   if (emWavelength != null) {
     const rgb = wavelengthToRGB(emWavelength)
     if (rgb) {
       const [wr, wg, wb] = rgb
-      // Invert to complementary color
-      const cr = 255 - wr, cg = 255 - wg, cb = 255 - wb
-      return `rgb(${Math.round(lerp(12, cr, t))},${Math.round(lerp(12, cg, t))},${Math.round(lerp(12, cb, t))})`
+      const [tr, tg, tb] = readType === 'absorbance'
+        ? [255 - wr, 255 - wg, 255 - wb]   // complement = transmitted color
+        : [wr, wg, wb]                       // direct emission color
+      return `rgb(${Math.round(lerp(12, tr, t))},${Math.round(lerp(12, tg, t))},${Math.round(lerp(12, tb, t))})`
     }
   }
 
@@ -92,8 +95,11 @@ function valueToColor(t, readType, emWavelength) {
 }
 
 function textColorFor(t, readType, emWavelength) {
-  // When using wavelength colors, always use light text on dark BG
-  if (emWavelength != null) return t > 0.3 ? '#0a1929' : '#e2e8f0'
+  if (emWavelength != null) {
+    // Absorbance: complement colors can be bright at low t (dark wells), dim at high t
+    if (readType === 'absorbance') return t > 0.5 ? '#0a1929' : '#e2e8f0'
+    return t > 0.3 ? '#0a1929' : '#e2e8f0'
+  }
   if (readType === 'absorbance') return t > 0.5 ? '#e2e8f0' : '#0a1929'
   return t > 0.3 ? '#0a1929' : '#e2e8f0'
 }
@@ -132,9 +138,10 @@ export default function PlateHeatmap({
       values[pos] = series[timeIdx] ?? null
     }
 
-    const allV = Object.values(values).filter(v => v != null && typeof v === 'number' && !isNaN(v))
-    const vMin = allV.length ? Math.min(...allV) : 0
-    const vMax = allV.length ? Math.max(...allV) : 1
+    // Use global min/max across ALL timepoints so color scale stays stable as slider moves
+    const allVGlobal = Object.values(wellData).flat().filter(v => v != null && typeof v === 'number' && !isNaN(v))
+    const vMin = allVGlobal.length ? Math.min(...allVGlobal) : 0
+    const vMax = allVGlobal.length ? Math.max(...allVGlobal) : 1
 
     return { rows, cols, values, vMin, vMax }
   }, [wellData, plateSize, timeIdx, isMatrix, nRows, nCols])

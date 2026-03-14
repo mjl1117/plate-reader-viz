@@ -1056,3 +1056,19 @@ html, body, #root {
   padding: 2px 7px;
   text-transform: capitalize;
 }
+
+.opt-channel-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.opt-channel-tag {
+  background: #1e2d42;
+  border: 1px solid #2d4060;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #8fb3d4;
+  font-family: monospace;
+}

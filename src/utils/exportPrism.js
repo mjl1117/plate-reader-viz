@@ -140,12 +140,12 @@ export function exportPrismCsv(data, wellNames, unitPref = 'auto') {
   URL.revokeObjectURL(url)
 }
 
-export function exportPrismXlsx(data, wellNames, unitPref = 'auto') {
+export function exportPrismXlsx(data, wellNames, unitPref = 'auto', overrideFilename = null) {
   const rows = data.isKinetic
     ? buildKineticRows(data.wellData, data.times, wellNames, unitPref, data)
     : buildEndpointRows(data.wellData, wellNames, data)
   const ws = XLSX.utils.aoa_to_sheet(rows)
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, 'Prism Export')
-  XLSX.writeFile(wb, makeFilename(data, 'xlsx'))
+  XLSX.writeFile(wb, overrideFilename ?? makeFilename(data, 'xlsx'))
 }

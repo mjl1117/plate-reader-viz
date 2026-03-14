@@ -321,6 +321,7 @@ export default function App() {
           {showExport && (
             <ExportModal
               data={data}
+              datasets={datasets}
               wellNames={mergedNames}
               onClose={() => setShowExport(false)}
             />
