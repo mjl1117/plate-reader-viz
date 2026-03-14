@@ -70,11 +70,25 @@ function tryParseOneBlock(rows, blockRowIdx) {
   const readModeSrc = String(blockRow[5] ?? '').toLowerCase()
   const isLumBlock  = readModeSrc.includes('lum')
 
-  // Wavelength: last number in 300–900 range in block header
+  // Wavelength detection.
+  // SoftMax "Plate:" headers contain: [..., emission, ?, ?, plateSize, excitation, "Manual"|"Automatic"]
+  // Detect that pattern first to get both ex and em; otherwise fall back to right-to-left scan.
   let wavelength = null
-  for (let i = blockRow.length - 1; i >= 0; i--) {
-    const v = blockRow[i]
-    if (typeof v === 'number' && v >= 300 && v <= 900) { wavelength = v; break }
+  const manualIdx = blockRow.findIndex(v => v === 'Manual' || v === 'Automatic')
+  if (manualIdx >= 6) {
+    const ex = blockRow[manualIdx - 1]
+    const em = blockRow[manualIdx - 5]
+    if (typeof ex === 'number' && ex >= 300 && ex <= 800 &&
+        typeof em === 'number' && em >= 300 && em <= 800) {
+      wavelength = `${ex}/${em}`   // store as "excitation/emission" string
+    }
+  }
+  if (wavelength == null) {
+    // Fallback: last number in 300–900 range in block header
+    for (let i = blockRow.length - 1; i >= 0; i--) {
+      const v = blockRow[i]
+      if (typeof v === 'number' && v >= 300 && v <= 900) { wavelength = v; break }
+    }
   }
 
   // Find the column-header row (col[1] contains 'Temperature')

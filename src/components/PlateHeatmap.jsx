@@ -35,17 +35,19 @@ function wavelengthToRGB(nm) {
   ]
 }
 
-// Extract emission wavelength from the wavelengths array.
-// "480/520" → 520 (emission), "600" → 600 (single), otherwise null.
+// Extract the emission wavelength — always the HIGHEST wavelength (emission > excitation).
+// Handles: "480/520" slash notation, single "600", or ["485","528"] two-entry arrays.
 function getEmissionWavelength(wavelengths) {
   if (!wavelengths?.length) return null
-  const w = String(wavelengths[0]).trim()
-  if (w.includes('/')) {
-    const em = parseInt(w.split('/')[1])
-    return (isNaN(em) || em < 300 || em > 800) ? null : em
+  const nums = []
+  for (const w of wavelengths) {
+    const s = String(w).trim()
+    for (const part of s.includes('/') ? s.split('/') : [s]) {
+      const n = parseInt(part)
+      if (!isNaN(n) && n >= 300 && n <= 800) nums.push(n)
+    }
   }
-  const n = parseInt(w)
-  return (isNaN(n) || n < 300 || n > 800) ? null : n
+  return nums.length ? Math.max(...nums) : null
 }
 
 // ── Color scales ──────────────────────────────────────────────────────────────
@@ -152,8 +154,10 @@ export default function PlateHeatmap({
   const isSmall  = !isMatrix && (plateSize === 384)
   const R        = isSmall ? 10 : 16
   const gap      = isSmall ? 24 : 36
-  const padLeft  = isSmall ? 28 : 42
-  const padTop   = isSmall ? 22 : 32
+  // Extra padding ensures row letters (left) and column numbers (top) sit
+  // completely outside the well circles with a clear gap.
+  const padLeft  = isSmall ? 34 : 46   // ≥ R + label_width + gap
+  const padTop   = isSmall ? 32 : 44   // ≥ R + label_height + gap
   const svgW     = padLeft + cols.length * gap + 12
   const svgH     = padTop  + rows.length * gap + 12
 
@@ -173,12 +177,12 @@ export default function PlateHeatmap({
         className="plate-svg"
         style={{ maxWidth: '100%' }}
       >
-        {/* Column headers */}
+        {/* Column headers — positioned above the top well edge (y < padTop − R) */}
         {cols.map((c, ci) => (
           <text
             key={c}
             x={padLeft + ci * gap}
-            y={padTop - 6}
+            y={padTop - R - 4}
             textAnchor="middle"
             className="plate-label"
             fontSize={isSmall ? 7 : 10}
@@ -191,9 +195,9 @@ export default function PlateHeatmap({
         {rows.map((r, ri) => (
           <g key={r}>
             <text
-              x={padLeft - (isSmall ? 10 : 14)}
-              y={padTop + ri * gap + 4}
-              textAnchor="middle"
+              x={padLeft - R - 4}
+              y={padTop + ri * gap + (isSmall ? 2.5 : 3.5)}
+              textAnchor="end"
               className="plate-label"
               fontSize={isSmall ? 7 : 10}
             >
